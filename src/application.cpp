@@ -128,13 +128,10 @@ static bool send_login_request(TcpSocket& sock, const AppConfig& cfg,
         req_seq = seq_override;
     }
 
-    // Sequence = 0 means "start from beginning" (seq 1)
-    // Space-filled = "next available"
-    if (req_seq == 0) {
-        std::memset(login->requested_sequence, ' ', 20);
-    } else {
-        format_ascii_u64(login->requested_sequence, 20, req_seq);
-    }
+    // Sequence = 0 means "next available"
+    // Send as ASCII number for all values
+    // (some servers reject space-filled fields)
+    format_ascii_u64(login->requested_sequence, 20, req_seq);
 
     return sock.send_bytes(packet, (int)sizeof(packet));
 }
@@ -200,6 +197,12 @@ int Application::run() {
 
     std::printf("Login Request sent (seq=%llu)\n", (unsigned long long)login_seq);
 
+    // Session and sequence tracking
+    // (populated by Login Accepted)
+    std::string session;
+    uint64_t current_seq = 0;
+    uint64_t decoded_count = 0;
+
     // Read Login Response
     // First packet from server must be
     // Login Accepted or Login Rejected
@@ -241,11 +244,11 @@ int Application::run() {
             }
 
             LoginAcceptedPayload* accepted = (LoginAcceptedPayload*)payload;
-            std::string session(accepted->session, 10);
-            uint64_t next_seq = parse_ascii_u64(accepted->sequence_number, 20);
+            session.assign(accepted->session, 10);
+            current_seq = parse_ascii_u64(accepted->sequence_number, 20);
 
             std::printf(">> LOGIN_ACCEPTED Session='%s' NextSequence=%llu\n",
-                        session.c_str(), (unsigned long long)next_seq);
+                        session.c_str(), (unsigned long long)current_seq);
         }
         else if (pkt_type == SOUP_PKT_LOGIN_REJECTED) {
             uint8_t reason = 0;
@@ -282,10 +285,6 @@ int Application::run() {
 
     // Main receive loop
     // Use poll() for heartbeat timing
-    std::string session;
-    uint64_t current_seq = 0;
-    uint64_t decoded_count = 0;
-    bool session_set = false;
 
     // Heartbeat tracking
     int heartbeat_ms = cfg.heartbeat_interval_sec * 1000;
@@ -389,13 +388,6 @@ int Application::run() {
             // Track sequence
             // SoupBinTCP: server assigns sequential
             // sequence numbers starting from Login Accepted seq.
-            if (!session_set) {
-                // First sequenced message - extract session
-                // from prior Login Accepted
-                // (we already printed it, just track seq)
-                session_set = true;
-            }
-
             current_seq++;
 
             // Type filter
